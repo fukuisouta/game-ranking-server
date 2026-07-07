@@ -4,37 +4,42 @@ const { Client } = require('pg');
 const PORT = process.env.PORT || 10000;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// 💡 データベースの初期設定
+// 🌟 グローバルでDBクライアントを1つだけ管理する
+let globalDbClient = null;
+
+// 💡 データベースの初期設定（サーバー起動時に1回だけ呼ぶ）
 async function initDatabase() {
     if (!DATABASE_URL) {
         console.log("[DB_WARNING] DATABASE_URLが設定されていません。メモリモードで動作します。");
         return null;
     }
-    const client = new Client({
-        connectionString: DATABASE_URL,
-    });
-    await client.connect();
-    
-    // ランキング用のテーブルがなければ自動作成するSQL
-    await client.query(`
-        CREATE TABLE IF NOT EXISTS ranking (
-            id SERIAL PRIMARY KEY,
-            player_name VARCHAR(16) NOT NULL,
-            clear_time REAL NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `);
-    console.log("[DB_SUCCESS] PostgreSQL データベースに正常に接続し、テーブルを確認しました。");
-    return client;
+    try {
+        const client = new Client({
+            connectionString: DATABASE_URL,
+            // 💡 接続を安定させるための設定を追加
+            ssl: { rejectUnauthorized: false } 
+        });
+        await client.connect();
+        
+        // ランキング用のテーブルがなければ自動作成するSQL
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS ranking (
+                id SERIAL PRIMARY KEY,
+                player_name VARCHAR(16) NOT NULL,
+                clear_time REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        console.log("[DB_SUCCESS] PostgreSQL データベースに正常に接続し、テーブルを確認しました。");
+        return client;
+    } catch (err) {
+        console.error("[DB_ERROR] データベース初期接続に失敗しました:", err);
+        return null;
+    }
 }
 
 const server = net.createServer(async (socket) => {
-    let dbClient = null;
-    try {
-        dbClient = await initDatabase();
-    } catch (dbErr) {
-        console.error("[DB_ERROR] データベース接続に失敗しました:", dbErr);
-    }
+    // 💡 毎回 initDatabase() を呼ばず、グローバルの接続を使い回す
 
     socket.on('data', async (data) => {
         try {
@@ -43,8 +48,8 @@ const server = net.createServer(async (socket) => {
             // 💡 1. ブラウザ用のHTML返信処理 (DBからデータを取得する)
             if (text.startsWith('GET ') || text.startsWith('HEAD ')) {
                 let rankingList = [];
-                if (dbClient) {
-                    const res = await dbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 10;");
+                if (globalDbClient) {
+                    const res = await globalDbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 10;");
                     rankingList = res.rows.map(row => ({ playerName: row.player_name, clearTime: row.clear_time }));
                 } else {
                     rankingList = [{ playerName: "DB_OFFLINE_TEST", clearTime: 99.99 }];
@@ -87,8 +92,8 @@ const server = net.createServer(async (socket) => {
                 let clearTime = binaryBuffer.readFloatLE(16);
 
                 if (playerName.length > 0 && !isNaN(clearTime)) {
-                    if (dbClient) {
-                        await dbClient.query(
+                    if (globalDbClient) {
+                        await globalDbClient.query(
                             "INSERT INTO ranking (player_name, clear_time) VALUES ($1, $2);",
                             [playerName, clearTime]
                         );
@@ -101,8 +106,8 @@ const server = net.createServer(async (socket) => {
 
             // 💡 4. 最新のTOP5を取得してゲームへ返信
             let top5 = [];
-            if (dbClient) {
-                const res = await dbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 5;");
+            if (globalDbClient) {
+                const res = await globalDbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 5;");
                 top5 = res.rows.map(row => ({ playerName: row.player_name, clearTime: row.clear_time }));
             }
 
@@ -126,14 +131,16 @@ const server = net.createServer(async (socket) => {
         } catch (err) {
             console.error(`[ERROR]`, err);
             socket.end();
-        } finally {
-            if (dbClient) {
-                await dbClient.end().catch(() => {});
-            }
         }
+        // 🛑 変更点: ここにあった dbClient.end() を完全に削除！接続を切断しません。
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`[SERVER_START] PostgreSQL対応ランキングサーバー稼働中...`);
-});
+// 🌟 サーバーを起動する前に、1回だけDB接続を確立する
+(async () => {
+    globalDbClient = await initDatabase();
+    
+    server.listen(PORT, () => {
+        console.log(`[SERVER_START] PostgreSQL対応常時接続ランキングサーバー稼働中...`);
+    });
+})();
