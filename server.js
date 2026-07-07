@@ -61,7 +61,7 @@ const server = http.createServer(async (req, res) => {
     let rankingList = [];
     if (globalDbClient) {
         try {
-            const dbRes = await globalDbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 10;");
+            const dbRes = await globalDbClient.query("SELECT player_name, clear_time FROM ranking ORDER BY clear_time ASC LIMIT 1000;");
             rankingList = dbRes.rows.map(row => ({ playerName: row.player_name, clearTime: row.clear_time }));
         } catch (err) {
             console.error("データ取得エラー:", err);
