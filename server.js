@@ -7,6 +7,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 
 let globalDbClient = null;
 
+// データベースの初期設定とテーブル作成
 async function initDatabase() {
     if (!DATABASE_URL) return null;
     try {
@@ -15,6 +16,8 @@ async function initDatabase() {
             ssl: { rejectUnauthorized: false }
         });
         await client.connect();
+        
+        // テーブル作成
         await client.query(`
             CREATE TABLE IF NOT EXISTS ranking (
                 id SERIAL PRIMARY KEY,
@@ -23,6 +26,13 @@ async function initDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+
+        // もしデータが完全に空だった場合、初期のテストデータを1件だけ入れる
+        const countRes = await client.query("SELECT COUNT(*) FROM ranking;");
+        if (parseInt(countRes.rows[0].count, 10) === 0) {
+            await client.query("INSERT INTO ranking (player_name, clear_time) VALUES ('TEST_PLAYER', 99.99);");
+        }
+
         console.log("[DB_SUCCESS] PostgreSQLに接続完了。");
         return client;
     } catch (err) {
@@ -31,12 +41,49 @@ async function initDatabase() {
     }
 }
 
+// データベースを初期状態（TEST_PLAYERのみ）にリセットする関数
+async function resetDatabase() {
+    if (!globalDbClient) return false;
+    try {
+        // 全データを削除（テーブルは残す）
+        await globalDbClient.query("TRUNCATE TABLE ranking RESTART IDENTITY;");
+        // 初期データを追加
+        await globalDbClient.query("INSERT INTO ranking (player_name, clear_time) VALUES ('TEST_PLAYER', 99.99);");
+        console.log("[DB_RESET] データベースランキングを初期化しました。");
+        return true;
+    } catch (err) {
+        console.error("[DB_RESET_ERROR] リセット失敗:", err);
+        return false;
+    }
+}
+
 const server = http.createServer(async (req, res) => {
-    // URLのパラメータ（?name=...&time=...）を解析する
+    // URLのパラメータ（?name=...&time=... または ?password=...）を解析
     const parsedUrl = url.parse(req.url, true);
     const query = parsedUrl.query;
 
-    // 💡 ゲームからの送信（URLにnameとtimeが含まれている場合）
+    let message = "";
+    let isError = false;
+
+    // 💡 1. パスワードによるランキングリセット処理 (?password=ReoNa3150)
+    if (query.password !== undefined) {
+        if (query.password === "ReoNa3150") {
+            const success = await resetDatabase();
+            if (success) {
+                message = "Ranking successfully reset!";
+                isError = false;
+            } else {
+                message = "Database reset failed. Check server logs.";
+                isError = true;
+            }
+        } else {
+            message = "Invalid admin password.";
+            isError = true;
+            console.log(`[RESET_FAILED] パスワード不一致: ${query.password}`);
+        }
+    }
+
+    // 💡 2. ゲームからのスコア送信処理 (?name=...&time=...)
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
@@ -57,7 +104,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 💡 ブラウザからのアクセス（通常のランキングHTML表示）
+    // 💡 3. ブラウザからのアクセス（通常のランキングHTML表示）
     let rankingList = [];
     if (globalDbClient) {
         try {
@@ -68,21 +115,48 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    // メッセージ表示用HTMLの組み立て
+    let messageHtml = "";
+    if (message) {
+        const color = isError ? "#e74c3c" : "#2ecc71";
+        messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 400px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
+    }
+
+    // レスポンス用のHTML（管理用パネル付き）
     let html = `<html><head><meta charset='utf-8'><title>Solo Ranking</title>
     <style>
-        body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px; }
-        table { margin: 0 auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 400px; }
+        body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px; color: #2c3e50; }
+        table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 400px; }
         th, td { padding: 12px 20px; border-bottom: 1px solid #ddd; }
         th { background: #2c3e50; color: #fff; }
         tr:nth-child(even) { background: #f9f9f9; }
-        h1 { color: #2c3e50; }
+        .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
+        input[type='password'] { padding: 8px; width: 180px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        input[type='submit'] { padding: 8px 16px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        input[type='submit']:hover { background: #c0392b; }
+        h1 { margin-bottom: 5px; color: #2c3e50; }
+        h2 { font-size: 16px; color: #7f8c8d; margin-top: 0; margin-bottom: 25px; }
     </style>
-    </head><body><h1>Solo Play Ranking</h1><table><tr><th>Rank</th><th>Player</th><th>Time</th></tr>`;
+    </head><body>
+    <h1>Solo Play Ranking</h1>
+    <h2>Game Score Board</h2>
+    ${messageHtml}
+    <table><tr><th>Rank</th><th>Player</th><th>Time</th></tr>`;
     
     rankingList.forEach((item, index) => {
         html += `<tr><td>${index + 1}</td><td>${item.playerName}</td><td>${item.clearTime.toFixed(2)}s</td></tr>`;
     });
-    html += `</table></body></html>`;
+
+    // 管理者用リセットフォーム
+    html += `</table>
+    <div class='admin-panel'>
+        <h3>Reset Ranking</h3>
+        <form action='/' method='get'>
+            <input type='password' name='password' placeholder='Enter Admin Password' required>
+            <input type='submit' value='RESET ALL'>
+        </form>
+    </div>
+    </body></html>`;
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8' });
     res.end(html);
