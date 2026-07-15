@@ -1,13 +1,13 @@
 const http = require('http');
 const { Client } = require('pg');
-const url = require('url'); // URL解析用モジュール
+const url = require('url');
 
 const PORT = process.env.PORT || 10000;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 let globalDbClient = null;
 
-// データベースの初期設定とテーブル作成
+// PostgreSQLデータベースの接続設定とテーブル作成
 async function initDatabase() {
     if (!DATABASE_URL) return null;
     try {
@@ -17,7 +17,7 @@ async function initDatabase() {
         });
         await client.connect();
         
-        // テーブル作成
+        // ランキング保存用のテーブルがなければ作成（初期レコードは挿入しない）
         await client.query(`
             CREATE TABLE IF NOT EXISTS ranking (
                 id SERIAL PRIMARY KEY,
@@ -27,12 +27,6 @@ async function initDatabase() {
             );
         `);
 
-        // もしデータが完全に空だった場合、初期のテストデータを1件だけ入れる
-        const countRes = await client.query("SELECT COUNT(*) FROM ranking;");
-        if (parseInt(countRes.rows[0].count, 10) === 0) {
-            await client.query("INSERT INTO ranking (player_name, clear_time) VALUES ('TEST_PLAYER', 99.99);");
-        }
-
         console.log("[DB_SUCCESS] PostgreSQLに接続完了。");
         return client;
     } catch (err) {
@@ -41,15 +35,13 @@ async function initDatabase() {
     }
 }
 
-// データベースを初期状態（TEST_PLAYERのみ）にリセットする関数
+// データベースの全スコアを物理削除して完全リセットする
 async function resetDatabase() {
     if (!globalDbClient) return false;
     try {
-        // 全データを削除（テーブルは残す）
+        // テーブルを空にしてIDの連番も1にリセット
         await globalDbClient.query("TRUNCATE TABLE ranking RESTART IDENTITY;");
-        // 初期データを追加
-        await globalDbClient.query("INSERT INTO ranking (player_name, clear_time) VALUES ('TEST_PLAYER', 99.99);");
-        console.log("[DB_RESET] データベースランキングを初期化しました。");
+        console.log("[DB_RESET] データベースランキングを完全に初期化しました。");
         return true;
     } catch (err) {
         console.error("[DB_RESET_ERROR] リセット失敗:", err);
@@ -57,15 +49,15 @@ async function resetDatabase() {
     }
 }
 
+// サーバーにリクエストが届いたときの処理
 const server = http.createServer(async (req, res) => {
-    // URLのパラメータ（?name=...&time=... または ?password=...）を解析
     const parsedUrl = url.parse(req.url, true);
     const query = parsedUrl.query;
 
     let message = "";
     let isError = false;
 
-    // 💡 1. パスワードによるランキングリセット処理 (?password=ReoNa3150)
+    // 1. パスワード（ReoNa3150）によるランキングリセット処理
     if (query.password !== undefined) {
         if (query.password === "ReoNa3150") {
             const success = await resetDatabase();
@@ -83,7 +75,7 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // 💡 2. ゲームからのスコア送信処理 (?name=...&time=...)
+    // 2. ゲームクライアントからのスコア登録処理（?name=名前&time=タイム）
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
@@ -104,7 +96,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 💡 3. ブラウザからのアクセス（通常のランキングHTML表示）
+    // 3. 最新のランキングデータをデータベースから取得する（タイム昇順）
     let rankingList = [];
     if (globalDbClient) {
         try {
@@ -115,14 +107,14 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // メッセージ表示用HTMLの組み立て
+    // リセット結果を通知するメッセージ（成功なら緑、失敗なら赤）のHTMLを組み立て
     let messageHtml = "";
     if (message) {
         const color = isError ? "#e74c3c" : "#2ecc71";
         messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 400px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
     }
 
-    // レスポンス用のHTML（管理用パネル付き）
+    // 表示するWebページのHTMLソースコードの作成
     let html = `<html><head><meta charset='utf-8'><title>Solo Ranking</title>
     <style>
         body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px; color: #2c3e50; }
@@ -143,11 +135,16 @@ const server = http.createServer(async (req, res) => {
     ${messageHtml}
     <table><tr><th>Rank</th><th>Player</th><th>Time</th></tr>`;
     
-    rankingList.forEach((item, index) => {
-        html += `<tr><td>${index + 1}</td><td>${item.playerName}</td><td>${item.clearTime.toFixed(2)}s</td></tr>`;
-    });
+    // データが空のとき、またはランキングが存在するときで表示を分岐
+    if (rankingList.length === 0) {
+        html += `<tr><td colspan='3' style='color:#7f8c8d; padding: 20px;'>No records found. Play the game to set a record!</td></tr>`;
+    } else {
+        rankingList.forEach((item, index) => {
+            html += `<tr><td>${index + 1}</td><td>${item.playerName}</td><td>${item.clearTime.toFixed(2)}s</td></tr>`;
+        });
+    }
 
-    // 管理者用リセットフォーム
+    // パスワード送信用のフォーム
     html += `</table>
     <div class='admin-panel'>
         <h3>Reset Ranking</h3>
@@ -158,10 +155,12 @@ const server = http.createServer(async (req, res) => {
     </div>
     </body></html>`;
 
+    // 完成したHTMLをブラウザに返却
     res.writeHead(200, { 'Content-Type': 'text/html; charset=UTF-8' });
     res.end(html);
 });
 
+// データベースのセットアップ後にサーバーを起動
 (async () => {
     globalDbClient = await initDatabase();
     server.listen(PORT, () => {
