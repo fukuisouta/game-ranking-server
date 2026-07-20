@@ -3,7 +3,6 @@ const { Pool } = require('pg');
 const zlib = require('zlib');
 
 const app = express();
-// C++から送られてくるBase64ログに対応するため容量制限を10MBに設定
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -11,7 +10,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル自動生成
+// テーブル作成
 async function initDB() {
   try {
     await pool.query(`
@@ -30,9 +29,8 @@ async function initDB() {
 }
 initDB();
 
-// ── 【スコア保存 API (POST)】 ──
+// スコア保存 API (POST)
 app.post('/api/score', async (req, res) => {
-  // C++から送信されるキー名 (name, time, log) に対応
   const { name, time, clear_time, log, play_log } = req.body;
   
   const scoreTime = time !== undefined ? time : clear_time;
@@ -42,37 +40,42 @@ app.post('/api/score', async (req, res) => {
     return res.status(400).json({ error: "Invalid data" });
   }
 
-  let decompressedLog = rawLog || '';
+  // ログ文字列の安全な受け取り
+  let finalLog = rawLog || '';
 
-  // C++で Base64 / 圧縮されたログをデコード・解凍試行
-  if (rawLog && typeof rawLog === 'string' && rawLog.length > 0) {
+  // Base64デコード処理（エラーが起きても絶対落とさない）
+  if (typeof rawLog === 'string' && rawLog.length > 0) {
     try {
       const buffer = Buffer.from(rawLog, 'base64');
-      // Node.jsのzlib(inflateRaw)でLZNT1/Deflate解凍を試みる
+      // まず通常のUTF-8文字列として試す
+      const decodedStr = buffer.toString('utf-8');
+      
+      // もしzlib等で圧縮されている可能性がある場合のみ解凍を試みる
       try {
-        decompressedLog = zlib.inflateRawSync(buffer).toString('utf-8');
+        finalLog = zlib.inflateRawSync(buffer).toString('utf-8');
       } catch (e) {
-        // 万が一非圧縮Base64の場合のフォールバック
-        decompressedLog = buffer.toString('utf-8');
+        // 解凍できないバイナリ/文字列ならそのままBase64デコード済みの値を使用
+        finalLog = decodedStr;
       }
     } catch (e) {
-      console.log("Base64 decode skipped, saving as raw text");
+      // デコード自体失敗した場合は生データをそのまま保存
+      finalLog = String(rawLog);
     }
   }
 
   try {
     await pool.query(
       'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
-      [name, parseFloat(scoreTime), decompressedLog]
+      [String(name), parseFloat(scoreTime), finalLog]
     );
     res.json({ success: true, message: "OK: Score Saved" });
   } catch (err) {
-    console.error("Save Error:", err);
+    console.error("Save Error Detail:", err);
     res.status(500).json({ error: "Database error" });
   }
 });
 
-// ── 【個別のログをダウンロードする API】 ──
+// ログダウンロード API
 app.get('/api/log/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
@@ -92,7 +95,7 @@ app.get('/api/log/:id', async (req, res) => {
   }
 });
 
-// ── 【ランキングリセット API】 ──
+// ランキングリセット API
 app.post('/api/reset', async (req, res) => {
   try {
     await pool.query('DELETE FROM ranking');
@@ -102,7 +105,7 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
-// ── 【ランキング表示 Webページ (GET /)】 ──
+// ランキング表示 Webページ (GET /)
 app.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
