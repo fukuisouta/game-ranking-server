@@ -1,222 +1,179 @@
 const express = require('express');
 const { Pool } = require('pg');
-const cors = require('cors');
-const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(express.json({ limit: '10mb' }));
 
-// ミドルウェア設定（JSONとURLエンコードのサイズ制限を緩和）
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-// PostgreSQL 接続設定
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// ── データベース初期化（起動時に play_log カラムの存在を保証する） ──
+// テーブル作成
 async function initDB() {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS scores (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                time REAL NOT NULL,
-                play_log TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        await pool.query(`
-            ALTER TABLE scores ADD COLUMN IF NOT EXISTS play_log TEXT;
-        `);
-
-        console.log("Database initialized successfully with 'play_log' column.");
-    } catch (err) {
-        console.error("Failed to initialize database:", err);
-    }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ranking (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(50) NOT NULL,
+        clear_time REAL NOT NULL,
+        play_log TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log("Database initialized");
+  } catch (err) {
+    console.error("DB Init Error:", err);
+  }
 }
 initDB();
 
-// ── POST: スコア＆ログ送信 API (C++クライアントからJSON受信用) ──
+// スコア保存 API (POST)
 app.post('/api/score', async (req, res) => {
-    const { name, time, log } = req.body;
+  const { name, clear_time, play_log } = req.body;
+  if (!name || clear_time === undefined) {
+    return res.status(400).json({ error: "Invalid data" });
+  }
 
-    if (!name || time === undefined) {
-        return res.status(400).json({ success: false, message: "Missing name or time" });
-    }
-
-    try {
-        const parsedTime = parseFloat(time);
-        const playLog = log || '';
-
-        await pool.query(
-            'INSERT INTO scores (name, time, play_log) VALUES ($1, $2, $3)',
-            [name, parsedTime, playLog]
-        );
-        
-        console.log(`[POST RECORD ADDED] Name: ${name}, Time: ${parsedTime}s, LogSize: ${playLog.length}`);
-        return res.status(200).json({ success: true, message: "OK: Score Saved" });
-    } catch (err) {
-        console.error("POST データ登録エラー:", err);
-        return res.status(500).json({ success: false, message: "Database Insert Error" });
-    }
+  try {
+    await pool.query(
+      'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
+      [name, parseFloat(clear_time), play_log || '']
+    );
+    res.json({ success: true, message: "OK: Score Saved" });
+  } catch (err) {
+    console.error("Save Error:", err);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
-// ── API: ランキング取得 (JSON) ──
-app.get('/api/scores', async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT name, time, play_log, created_at FROM scores ORDER BY time ASC LIMIT 50'
-        );
-        res.json(result.rows);
-    } catch (err) {
-        console.error("データ取得エラー:", err);
-        res.status(500).json({ error: err.message });
+// ── 【追加】個別のログをファイルとしてダウンロードする API ──
+app.get('/api/log/:id', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0 || !result.rows[0].play_log) {
+      return res.status(404).send('Log not found');
     }
+
+    const item = result.rows[0];
+    const filename = `log_${item.name}_${req.params.id}.txt`;
+
+    // テキストファイルとしてダウンロードさせるヘッダー設定
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(item.play_log);
+  } catch (err) {
+    res.status(500).send('Server Error');
+  }
 });
 
-// ── POST: ランキングリセット API ──
+// ランキングリセット API
 app.post('/api/reset', async (req, res) => {
-    const { password } = req.body;
-    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-
-    if (password !== ADMIN_PASSWORD) {
-        return res.status(401).json({ success: false, message: 'Invalid Password' });
-    }
-
-    try {
-        await pool.query('DELETE FROM scores');
-        console.log('[RANKING RESET] All records deleted by admin.');
-        res.json({ success: true, message: 'All records have been reset.' });
-    } catch (err) {
-        console.error("リセットエラー:", err);
-        res.status(500).json({ success: false, message: 'Database Reset Error' });
-    }
+  try {
+    await pool.query('DELETE FROM ranking');
+    res.redirect('/');
+  } catch (err) {
+    res.status(500).send("Database Error");
+  }
 });
 
-// ── ランキング表示 HTML (ルートアクセス用) ──
+// ランキング表示 Webページ (GET /)
 app.get('/', async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT name, time, play_log FROM scores ORDER BY time ASC LIMIT 50'
-        );
-        const scores = result.rows;
+  try {
+    const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
+    
+    let rowsHtml = '';
+    result.rows.forEach((row, index) => {
+      const logSize = row.play_log ? row.play_log.length : 0;
+      
+      // ── 【変更】ログがある場合はダウンロードリンク（<a>タグ）にする ──
+      const logHtml = logSize > 0 
+        ? `<a href="/api/log/${row.id}" class="download-btn"> Download (${logSize} B)</a>`
+        : '<span class="no-log">None</span>';
 
-        let tableRows = '';
-        if (scores.length === 0) {
-            tableRows = `<tr><td colspan="4" style="text-align:center; padding: 20px; color: #888;">No records found. Play the game to set a record!</td></tr>`;
-        } else {
-            scores.forEach((row, index) => {
-                const logStatus = row.play_log && row.play_log.length > 0 
-                    ? `<span style="color:#2ecc71; font-weight:bold;">Available (${row.play_log.length} B)</span>` 
-                    : `<span style="color:#95a5a6;">None</span>`;
+      rowsHtml += `
+        <tr>
+          <td>${index + 1}</td>
+          <td><strong>${escapeHtml(row.name)}</strong></td>
+          <td>${row.clear_time.toFixed(3)} s</td>
+          <td>${logHtml}</td>
+        </tr>
+      `;
+    });
 
-                tableRows += `
-                    <tr>
-                        <td style="text-align:center;">${index + 1}</td>
-                        <td><strong>${escapeHtml(row.name)}</strong></td>
-                        <td style="text-align:right;">${row.time.toFixed(3)} s</td>
-                        <td style="text-align:center;">${logStatus}</td>
-                    </tr>
-                `;
-            });
-        }
+    const html = `
+      <!DOCTYPE html>
+      <html lang="ja">
+      <head>
+        <meta charset="UTF-8">
+        <title>Solo Play Ranking</title>
+        <style>
+          body { font-family: sans-serif; background: #f4f6f8; padding: 40px; display: flex; flex-direction: column; align-items: center; }
+          h1 { color: #333; }
+          table { border-collapse: collapse; width: 600px; background: #fff; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
+          th, td { padding: 12px 16px; text-align: left; }
+          th { background: #34495e; color: #fff; }
+          tr:nth-child(even) { background: #f8f9fa; }
+          .no-log { color: #95a5a6; font-size: 0.9em; }
+          
+          /* ダウンロードボタン風デザイン */
+          .download-btn {
+            color: #27ae60;
+            font-weight: bold;
+            text-decoration: none;
+            background: #e8f8f0;
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #27ae60;
+            font-size: 0.85em;
+            transition: 0.2s;
+          }
+          .download-btn:hover {
+            background: #27ae60;
+            color: #fff;
+          }
 
-        const html = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Solo Play Ranking</title>
-            <style>
-                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 40px 20px; color: #333; }
-                .container { max-width: 700px; margin: 0 auto; }
-                h1 { text-align: center; color: #2c3e50; margin-bottom: 5px; }
-                p.sub { text-align: center; color: #7f8c8d; margin-top: 0; margin-bottom: 30px; }
-                table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-                th { background-color: #34495e; color: #fff; padding: 12px 15px; text-align: left; font-size: 14px; }
-                td { padding: 12px 15px; border-bottom: 1px solid #ecf0f1; font-size: 14px; }
-                tr:last-child td { border-bottom: none; }
-                tr:nth-child(even) { background-color: #f8f9fa; }
-                .reset-box { margin-top: 40px; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-top: 4px solid #e74c3c; text-align: center; }
-                .reset-box h3 { margin-top: 0; color: #c0392b; }
-                input[type="password"] { padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; width: 200px; }
-                button { padding: 8px 16px; background-color: #e74c3c; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-                button:hover { background-color: #c0392b; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>Solo Play Ranking</h1>
-                <p class="sub">Game Score Board</p>
+          .reset-sec { margin-top: 30px; text-align: center; }
+          .reset-btn { background: #e74c3c; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+          .reset-btn:hover { background: #c0392b; }
+        </style>
+      </head>
+      <body>
+        <h1>Solo Play Ranking</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Player</th>
+              <th>Time</th>
+              <th>Log</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
 
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="width: 10%; text-align:center;">Rank</th>
-                            <th style="width: 45%;">Player</th>
-                            <th style="width: 25%; text-align:right;">Time</th>
-                            <th style="width: 20%; text-align:center;">Log</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${tableRows}
-                    </tbody>
-                </table>
-
-                <div class="reset-box">
-                    <h3>Reset Ranking</h3>
-                    <input type="password" id="adminPass" placeholder="Enter Admin Password">
-                    <button onclick="resetRanking()">RESET ALL</button>
-                </div>
-            </div>
-
-            <script>
-                async function resetRanking() {
-                    const password = document.getElementById('adminPass').value;
-                    if (!password) { alert('Please enter password'); return; }
-                    
-                    if (!confirm('Are you sure you want to delete all ranking data?')) return;
-
-                    const res = await fetch('/api/reset', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ password })
-                    });
-                    const data = await res.json();
-                    if (data.success) {
-                        alert(data.message);
-                        location.reload();
-                    } else {
-                        alert('Error: ' + data.message);
-                    }
-                }
-            </script>
-        </body>
-        </html>
-        `;
-        res.send(html);
-    } catch (err) {
-        console.error("HTML生成エラー:", err);
-        res.status(500).send("Server Error");
-    }
+        <div class="reset-sec">
+          <form action="/api/reset" method="POST" onsubmit="return confirm('本当にランキングをリセットしますか？');">
+            <button type="submit" class="reset-btn">Reset Ranking</button>
+          </form>
+        </div>
+      </body>
+      </html>
+    `;
+    res.send(html);
+  } catch (err) {
+    console.error("Fetch Error:", err);
+    res.status(500).send("Database Error");
+  }
 });
 
-// HTMLエスケープヘルパー
 function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#039;');
+  return str.replace(/[&<>"']/g, function(m) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+  });
 }
 
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
