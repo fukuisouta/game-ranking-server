@@ -1,7 +1,9 @@
 const express = require('express');
 const { Pool } = require('pg');
+const zlib = require('zlib');
 
 const app = express();
+// C++から送られてくるBase64ログに対応するため容量制限を10MBに設定
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -9,7 +11,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル作成
+// テーブル自動生成
 async function initDB() {
   try {
     await pool.query(`
@@ -28,17 +30,40 @@ async function initDB() {
 }
 initDB();
 
-// スコア保存 API (POST)
+// ── 【スコア保存 API (POST)】 ──
 app.post('/api/score', async (req, res) => {
-  const { name, clear_time, play_log } = req.body;
-  if (!name || clear_time === undefined) {
+  // C++から送信されるキー名 (name, time, log) に対応
+  const { name, time, clear_time, log, play_log } = req.body;
+  
+  const scoreTime = time !== undefined ? time : clear_time;
+  const rawLog = log !== undefined ? log : play_log;
+
+  if (!name || scoreTime === undefined) {
     return res.status(400).json({ error: "Invalid data" });
+  }
+
+  let decompressedLog = rawLog || '';
+
+  // C++で Base64 / 圧縮されたログをデコード・解凍試行
+  if (rawLog && typeof rawLog === 'string' && rawLog.length > 0) {
+    try {
+      const buffer = Buffer.from(rawLog, 'base64');
+      // Node.jsのzlib(inflateRaw)でLZNT1/Deflate解凍を試みる
+      try {
+        decompressedLog = zlib.inflateRawSync(buffer).toString('utf-8');
+      } catch (e) {
+        // 万が一非圧縮Base64の場合のフォールバック
+        decompressedLog = buffer.toString('utf-8');
+      }
+    } catch (e) {
+      console.log("Base64 decode skipped, saving as raw text");
+    }
   }
 
   try {
     await pool.query(
       'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
-      [name, parseFloat(clear_time), play_log || '']
+      [name, parseFloat(scoreTime), decompressedLog]
     );
     res.json({ success: true, message: "OK: Score Saved" });
   } catch (err) {
@@ -47,7 +72,7 @@ app.post('/api/score', async (req, res) => {
   }
 });
 
-// ログダウンロード API (GET)
+// ── 【個別のログをダウンロードする API】 ──
 app.get('/api/log/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
@@ -67,7 +92,7 @@ app.get('/api/log/:id', async (req, res) => {
   }
 });
 
-// ランキングリセット API
+// ── 【ランキングリセット API】 ──
 app.post('/api/reset', async (req, res) => {
   try {
     await pool.query('DELETE FROM ranking');
@@ -77,17 +102,15 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
-// ランキング表示 Webページ (GET /)
+// ── 【ランキング表示 Webページ (GET /)】 ──
 app.get('/', async (req, res) => {
   try {
-    // 複雑なSQL関数を使わずに全データをそのまま取得するシンプルなクエリ
     const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
     
     let rowsHtml = '';
     result.rows.forEach((row, index) => {
-      // 安全に文字列長を取得
       const logText = row.play_log || '';
-      const logSize = logText.length;
+      const logSize = Buffer.byteLength(logText, 'utf-8');
       
       const logHtml = logSize > 0 
         ? `<a href="/api/log/${row.id}" class="download-btn">Download (${logSize} B)</a>`
