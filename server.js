@@ -1,6 +1,5 @@
 const express = require('express');
 const { Pool } = require('pg');
-const zlib = require('zlib');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -29,7 +28,7 @@ async function initDB() {
 }
 initDB();
 
-// スコア保存 API (POST)
+// ── 【スコア保存 API (POST)】 ──
 app.post('/api/score', async (req, res) => {
   const { name, time, clear_time, log, play_log } = req.body;
   
@@ -40,33 +39,11 @@ app.post('/api/score', async (req, res) => {
     return res.status(400).json({ error: "Invalid data" });
   }
 
-  // ログ文字列の安全な受け取り
-  let finalLog = rawLog || '';
-
-  // Base64デコード処理（エラーが起きても絶対落とさない）
-  if (typeof rawLog === 'string' && rawLog.length > 0) {
-    try {
-      const buffer = Buffer.from(rawLog, 'base64');
-      // まず通常のUTF-8文字列として試す
-      const decodedStr = buffer.toString('utf-8');
-      
-      // もしzlib等で圧縮されている可能性がある場合のみ解凍を試みる
-      try {
-        finalLog = zlib.inflateRawSync(buffer).toString('utf-8');
-      } catch (e) {
-        // 解凍できないバイナリ/文字列ならそのままBase64デコード済みの値を使用
-        finalLog = decodedStr;
-      }
-    } catch (e) {
-      // デコード自体失敗した場合は生データをそのまま保存
-      finalLog = String(rawLog);
-    }
-  }
-
   try {
+    // ログデータ（Base64文字列）を変換せずそのままDBへ保存（絶対エラーが出ない！）
     await pool.query(
       'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
-      [String(name), parseFloat(scoreTime), finalLog]
+      [String(name), parseFloat(scoreTime), String(rawLog || '')]
     );
     res.json({ success: true, message: "OK: Score Saved" });
   } catch (err) {
@@ -75,7 +52,7 @@ app.post('/api/score', async (req, res) => {
   }
 });
 
-// ログダウンロード API
+// ── 【ログダウンロード API (GET)】 ──
 app.get('/api/log/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
@@ -86,6 +63,7 @@ app.get('/api/log/:id', async (req, res) => {
     const item = result.rows[0];
     const filename = `log_${item.name}_${req.params.id}.txt`;
 
+    // DBにはBase64（あるいは生のログ）が入っているのでそのままテキストファイルとしてダウンロードさせる
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(item.play_log);
