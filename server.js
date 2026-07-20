@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const app = express();
+// C++から送られる大きなログ(Base64)に対応するため10MB制限
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -9,7 +10,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル作成
+// テーブル初期化＆自動更新
 async function initDB() {
   try {
     await pool.query(`
@@ -21,7 +22,13 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log("Database initialized");
+    
+    // 古いテーブル構造対策
+    await pool.query(`
+      ALTER TABLE ranking ADD COLUMN IF NOT EXISTS play_log TEXT;
+    `);
+
+    console.log("Database initialized successfully");
   } catch (err) {
     console.error("DB Init Error:", err);
   }
@@ -36,19 +43,30 @@ app.post('/api/score', async (req, res) => {
   const rawLog = log !== undefined ? log : play_log;
 
   if (!name || scoreTime === undefined) {
-    return res.status(400).json({ error: "Invalid data" });
+    return res.status(400).json({ error: "Invalid data: name or time missing" });
+  }
+
+  // C++から送られた Base64 内の改行・エスケープ文字(\r, \n)をクリーンアップ
+  let cleanBase64Log = "";
+  if (typeof rawLog === 'string') {
+    cleanBase64Log = rawLog.replace(/[\r\n\t\f\b]/g, '').trim();
   }
 
   try {
-    // ログデータ（Base64文字列）を変換せずそのままDBへ保存（絶対エラーが出ない！）
+    // クリーンな Base64 文字列として PostgreSQL に保存 (エラーが絶対に起きない)
     await pool.query(
       'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
-      [String(name), parseFloat(scoreTime), String(rawLog || '')]
+      [String(name), parseFloat(scoreTime), cleanBase64Log]
     );
+    
+    console.log(`[SCORE SAVED] Name: ${name}, Time: ${scoreTime}`);
     res.json({ success: true, message: "OK: Score Saved" });
   } catch (err) {
     console.error("Save Error Detail:", err);
-    res.status(500).json({ error: "Database error" });
+    res.status(500).json({ 
+      error: "Database error", 
+      detail: err.message 
+    });
   }
 });
 
@@ -63,7 +81,7 @@ app.get('/api/log/:id', async (req, res) => {
     const item = result.rows[0];
     const filename = `log_${item.name}_${req.params.id}.txt`;
 
-    // DBにはBase64（あるいは生のログ）が入っているのでそのままテキストファイルとしてダウンロードさせる
+    // Base64テキストとしてそのままダウンロード保存させる
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(item.play_log);
@@ -73,7 +91,7 @@ app.get('/api/log/:id', async (req, res) => {
   }
 });
 
-// ランキングリセット API
+// ── 【ランキングリセット API】 ──
 app.post('/api/reset', async (req, res) => {
   try {
     await pool.query('DELETE FROM ranking');
@@ -83,7 +101,7 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
-// ランキング表示 Webページ (GET /)
+// ── 【ランキング表示 Webページ (GET /)】 ──
 app.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
