@@ -6,10 +6,10 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ミドルウェア設定
+// ミドルウェア設定（JSONとURLエンコードのサイズ制限を緩和）
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // PostgreSQL 接続設定
 const pool = new Pool({
@@ -20,7 +20,6 @@ const pool = new Pool({
 // ── データベース初期化（起動時に play_log カラムの存在を保証する） ──
 async function initDB() {
     try {
-        // テーブルがなければ作成
         await pool.query(`
             CREATE TABLE IF NOT EXISTS scores (
                 id SERIAL PRIMARY KEY,
@@ -31,7 +30,6 @@ async function initDB() {
             );
         `);
 
-        // カラムが途中で追加された場合のために自動で ALTER TABLE
         await pool.query(`
             ALTER TABLE scores ADD COLUMN IF NOT EXISTS play_log TEXT;
         `);
@@ -43,38 +41,29 @@ async function initDB() {
 }
 initDB();
 
-// ── GET: スコア送信（C++ゲームクライアントからの受信用） ──
-// URL例: /?name=Player&time=12.34&log=...
-app.get('/', async (req, res, next) => {
-    const { name, time, log } = req.query;
+// ── POST: スコア＆ログ送信 API (C++クライアントからJSON受信用) ──
+app.post('/api/score', async (req, res) => {
+    const { name, time, log } = req.body;
 
-    // クエリパラメータに name と time がある場合は DB へ登録
-    if (name && time) {
-        try {
-            const parsedTime = parseFloat(time);
-            
-            // ★ URLエンコードで '+' が ' ' (スペース) に変換されてしまう対策
-            let playLog = log || '';
-            if (playLog) {
-                playLog = playLog.replace(/ /g, '+');
-            }
-
-            await pool.query(
-                'INSERT INTO scores (name, time, play_log) VALUES ($1, $2, $3)',
-                [name, parsedTime, playLog]
-            );
-            console.log(`[RECORD ADDED] Name: ${name}, Time: ${parsedTime}s, LogLength: ${playLog.length}`);
-            
-            // ★ DB登録成功時はレスポンスを返して終了（next()へ流さない）
-            return res.status(200).send("OK: Score Saved");
-        } catch (err) {
-            console.error("データ登録エラー:", err);
-            return res.status(500).send("Database Insert Error");
-        }
+    if (!name || time === undefined) {
+        return res.status(400).json({ success: false, message: "Missing name or time" });
     }
 
-    // クエリが無い（通常のWebブラウザアクセス）場合は次のルート(HTML描画)へ
-    next();
+    try {
+        const parsedTime = parseFloat(time);
+        const playLog = log || '';
+
+        await pool.query(
+            'INSERT INTO scores (name, time, play_log) VALUES ($1, $2, $3)',
+            [name, parsedTime, playLog]
+        );
+        
+        console.log(`[POST RECORD ADDED] Name: ${name}, Time: ${parsedTime}s, LogSize: ${playLog.length}`);
+        return res.status(200).json({ success: true, message: "OK: Score Saved" });
+    } catch (err) {
+        console.error("POST データ登録エラー:", err);
+        return res.status(500).json({ success: false, message: "Database Insert Error" });
+    }
 });
 
 // ── API: ランキング取得 (JSON) ──
@@ -93,7 +82,7 @@ app.get('/api/scores', async (req, res) => {
 // ── POST: ランキングリセット API ──
 app.post('/api/reset', async (req, res) => {
     const { password } = req.body;
-    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'; // 環境変数またはデフォルトパスワード
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
     if (password !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, message: 'Invalid Password' });
