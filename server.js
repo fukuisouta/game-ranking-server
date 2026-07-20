@@ -52,20 +52,28 @@ app.get('/', async (req, res, next) => {
     if (name && time) {
         try {
             const parsedTime = parseFloat(time);
-            const playLog = log || '';
+            
+            // ★ URLエンコードで '+' が ' ' (スペース) に変換されてしまう対策
+            let playLog = log || '';
+            if (playLog) {
+                playLog = playLog.replace(/ /g, '+');
+            }
 
             await pool.query(
                 'INSERT INTO scores (name, time, play_log) VALUES ($1, $2, $3)',
                 [name, parsedTime, playLog]
             );
-            console.log(`[RECORD ADDED] Name: ${name}, Time: ${parsedTime}s`);
+            console.log(`[RECORD ADDED] Name: ${name}, Time: ${parsedTime}s, LogLength: ${playLog.length}`);
+            
+            // ★ DB登録成功時はレスポンスを返して終了（next()へ流さない）
+            return res.status(200).send("OK: Score Saved");
         } catch (err) {
             console.error("データ登録エラー:", err);
             return res.status(500).send("Database Insert Error");
         }
     }
 
-    // クエリが無い（通常のWebブラウザアクセス）場合はランキング一覧画面を表示
+    // クエリが無い（通常のWebブラウザアクセス）場合は次のルート(HTML描画)へ
     next();
 });
 
