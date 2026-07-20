@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const app = express();
+// メモリ制限を10MBに拡張
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -9,7 +10,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル作成
+// テーブル作成（起動時に自動チェック）
 async function initDB() {
   try {
     await pool.query(`
@@ -47,7 +48,7 @@ app.post('/api/score', async (req, res) => {
   }
 });
 
-// ── 【追加】個別のログをファイルとしてダウンロードする API ──
+// ── 【個別のログをダウンロードする API】 ──
 app.get('/api/log/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
@@ -58,11 +59,11 @@ app.get('/api/log/:id', async (req, res) => {
     const item = result.rows[0];
     const filename = `log_${item.name}_${req.params.id}.txt`;
 
-    // テキストファイルとしてダウンロードさせるヘッダー設定
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(item.play_log);
   } catch (err) {
+    console.error("Download Error:", err);
     res.status(500).send('Server Error');
   }
 });
@@ -77,25 +78,31 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
-// ランキング表示 Webページ (GET /)
+// ── 【軽量化版】ランキング表示 Webページ (GET /) ──
 app.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
+    // 画面表示用に「ログの文字数 (LENGTH(play_log))」だけを軽量取得！
+    const result = await pool.query(`
+      SELECT id, name, clear_time, LENGTH(play_log) as log_length 
+      FROM ranking 
+      ORDER BY clear_time ASC 
+      LIMIT 10
+    `);
     
     let rowsHtml = '';
     result.rows.forEach((row, index) => {
-      const logSize = row.play_log ? row.play_log.length : 0;
+      const logSize = row.log_length || 0;
       
-      // ── 【変更】ログがある場合はダウンロードリンク（<a>タグ）にする ──
+      // ログがある場合はダウンロード用ボタンを表示
       const logHtml = logSize > 0 
-        ? `<a href="/api/log/${row.id}" class="download-btn"> Download (${logSize} B)</a>`
+        ? `<a href="/api/log/${row.id}" class="download-btn">Download (${logSize} B)</a>`
         : '<span class="no-log">None</span>';
 
       rowsHtml += `
         <tr>
           <td>${index + 1}</td>
           <td><strong>${escapeHtml(row.name)}</strong></td>
-          <td>${row.clear_time.toFixed(3)} s</td>
+          <td>${Number(row.clear_time).toFixed(3)} s</td>
           <td>${logHtml}</td>
         </tr>
       `;
@@ -116,7 +123,6 @@ app.get('/', async (req, res) => {
           tr:nth-child(even) { background: #f8f9fa; }
           .no-log { color: #95a5a6; font-size: 0.9em; }
           
-          /* ダウンロードボタン風デザイン */
           .download-btn {
             color: #27ae60;
             font-weight: bold;
@@ -127,6 +133,7 @@ app.get('/', async (req, res) => {
             border: 1px solid #27ae60;
             font-size: 0.85em;
             transition: 0.2s;
+            display: inline-block;
           }
           .download-btn:hover {
             background: #27ae60;
@@ -170,6 +177,7 @@ app.get('/', async (req, res) => {
 });
 
 function escapeHtml(str) {
+  if (!str) return '';
   return str.replace(/[&<>"']/g, function(m) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
   });
