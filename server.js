@@ -9,13 +9,14 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// ── 【データベース＆テーブル構造の自動修正】 ──
+// ── 【データベース＆テーブル構造の自動修復】 ──
 async function initDB() {
   try {
-    // 1. テーブルがなければ新規作成
+    // 1. 新規作成の場合
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ranking (
         id SERIAL PRIMARY KEY,
+        player_name VARCHAR(50),
         name VARCHAR(50),
         clear_time REAL NOT NULL,
         play_log TEXT,
@@ -23,11 +24,13 @@ async function initDB() {
       );
     `);
 
-    // 2. カラム不足（name, play_log）がある場合は自動で追加修復
-    await pool.query(`
-      ALTER TABLE ranking ADD COLUMN IF NOT EXISTS name VARCHAR(50);
-      ALTER TABLE ranking ADD COLUMN IF NOT EXISTS play_log TEXT;
-    `);
+    // 2. カラムが足りない場合は追加（エラー無視）
+    await pool.query(`ALTER TABLE ranking ADD COLUMN IF NOT EXISTS player_name VARCHAR(50);`).catch(() => {});
+    await pool.query(`ALTER TABLE ranking ADD COLUMN IF NOT EXISTS name VARCHAR(50);`).catch(() => {});
+    await pool.query(`ALTER TABLE ranking ADD COLUMN IF NOT EXISTS play_log TEXT;`).catch(() => {});
+
+    // 3. もし player_name に NOT NULL 制約が残っているなら解除して安全にする
+    await pool.query(`ALTER TABLE ranking ALTER COLUMN player_name DROP NOT NULL;`).catch(() => {});
 
     console.log("Database schema successfully verified/updated");
   } catch (err) {
@@ -47,47 +50,50 @@ app.post('/api/score', async (req, res) => {
     return res.status(400).json({ error: "Invalid data: name or time missing" });
   }
 
-  // C++から送られた Base64 内の改行・エスケープ文字(\r, \n)をクリーンアップ
+  // Base64 内の改行・エスケープ文字(\r, \n)をクリーンアップ
   let cleanBase64Log = "";
   if (typeof rawLog === 'string') {
     cleanBase64Log = rawLog.replace(/[\r\n\t\f\b]/g, '').trim();
   }
 
+  const playerNameStr = String(name);
+  const parsedTime = parseFloat(scoreTime);
+
   try {
-    // まず name カラムへ保存を試みる
+    // パターン1: player_name と name の両方に値をいれて INSERT (NOT NULL制約回避)
     await pool.query(
-      'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
-      [String(name), parseFloat(scoreTime), cleanBase64Log]
+      'INSERT INTO ranking (player_name, name, clear_time, play_log) VALUES ($1, $2, $3, $4)',
+      [playerNameStr, playerNameStr, parsedTime, cleanBase64Log]
     );
     
     console.log(`[SCORE SAVED] Name: ${name}, Time: ${scoreTime}`);
-    res.json({ success: true, message: "OK: Score Saved" });
-  } catch (err) {
-    // もし既存テーブルのカラム名が player_name になっている場合の安全フォールバック
-    if (err.message && err.message.includes('column "name"')) {
-      try {
-        await pool.query(
-          'INSERT INTO ranking (player_name, clear_time, play_log) VALUES ($1, $2, $3)',
-          [String(name), parseFloat(scoreTime), cleanBase64Log]
-        );
-        return res.json({ success: true, message: "OK: Score Saved (player_name)" });
-      } catch (fallbackErr) {
-        console.error("Fallback Save Error:", fallbackErr);
-      }
-    }
+    return res.json({ success: true, message: "OK: Score Saved" });
 
-    console.error("Save Error Detail:", err);
-    res.status(500).json({ 
-      error: "Database error", 
-      detail: err.message 
-    });
+  } catch (err) {
+    // 万が一 name カラムがテーブル上に存在しない場合などのフォールバック
+    try {
+      await pool.query(
+        'INSERT INTO ranking (player_name, clear_time, play_log) VALUES ($1, $2, $3)',
+        [playerNameStr, parsedTime, cleanBase64Log]
+      );
+      return res.json({ success: true, message: "OK: Score Saved (player_name only)" });
+    } catch (fallbackErr) {
+      console.error("Save Error Detail:", fallbackErr);
+      return res.status(500).json({ 
+        error: "Database error", 
+        detail: fallbackErr.message 
+      });
+    }
   }
 });
 
 // ── 【ログダウンロード API (GET)】 ──
 app.get('/api/log/:id', async (req, res) => {
   try {
-    const result = await pool.query('SELECT COALESCE(name, player_name, \'Player\') as name, play_log FROM ranking WHERE id = $1', [req.params.id]);
+    const result = await pool.query(
+      'SELECT COALESCE(name, player_name, \'Player\') as name, play_log FROM ranking WHERE id = $1',
+      [req.params.id]
+    );
     if (result.rows.length === 0 || !result.rows[0].play_log) {
       return res.status(404).send('Log not found');
     }
@@ -117,7 +123,9 @@ app.post('/api/reset', async (req, res) => {
 // ── 【ランキング表示 Webページ (GET /)】 ──
 app.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, COALESCE(name, player_name, \'Player\') as name, clear_time, play_log FROM ranking ORDER BY clear_time ASC LIMIT 10');
+    const result = await pool.query(
+      'SELECT id, COALESCE(name, player_name, \'Player\') as name, clear_time, play_log FROM ranking ORDER BY clear_time ASC LIMIT 10'
+    );
     
     let rowsHtml = '';
     result.rows.forEach((row, index) => {
