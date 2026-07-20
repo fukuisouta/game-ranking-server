@@ -2,7 +2,6 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const app = express();
-// メモリ制限を10MBに拡張
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -10,7 +9,7 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル作成（起動時に自動チェック）
+// テーブル作成
 async function initDB() {
   try {
     await pool.query(`
@@ -48,7 +47,7 @@ app.post('/api/score', async (req, res) => {
   }
 });
 
-// ── 【個別のログをダウンロードする API】 ──
+// ログダウンロード API (GET)
 app.get('/api/log/:id', async (req, res) => {
   try {
     const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
@@ -78,22 +77,18 @@ app.post('/api/reset', async (req, res) => {
   }
 });
 
-// ── 【軽量化版】ランキング表示 Webページ (GET /) ──
+// ランキング表示 Webページ (GET /)
 app.get('/', async (req, res) => {
   try {
-    // 画面表示用に「ログの文字数 (LENGTH(play_log))」だけを軽量取得！
-    const result = await pool.query(`
-      SELECT id, name, clear_time, LENGTH(play_log) as log_length 
-      FROM ranking 
-      ORDER BY clear_time ASC 
-      LIMIT 10
-    `);
+    // 複雑なSQL関数を使わずに全データをそのまま取得するシンプルなクエリ
+    const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
     
     let rowsHtml = '';
     result.rows.forEach((row, index) => {
-      const logSize = row.log_length || 0;
+      // 安全に文字列長を取得
+      const logText = row.play_log || '';
+      const logSize = logText.length;
       
-      // ログがある場合はダウンロード用ボタンを表示
       const logHtml = logSize > 0 
         ? `<a href="/api/log/${row.id}" class="download-btn">Download (${logSize} B)</a>`
         : '<span class="no-log">None</span>';
@@ -178,7 +173,7 @@ app.get('/', async (req, res) => {
 
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/[&<>"']/g, function(m) {
+  return String(str).replace(/[&<>"']/g, function(m) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
   });
 }
