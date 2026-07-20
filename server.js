@@ -2,7 +2,6 @@ const express = require('express');
 const { Pool } = require('pg');
 
 const app = express();
-// C++から送られる大きなログ(Base64)に対応するため10MB制限
 app.use(express.json({ limit: '10mb' }));
 
 const pool = new Pool({
@@ -10,25 +9,27 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// テーブル初期化＆自動更新
+// ── 【データベース＆テーブル構造の自動修正】 ──
 async function initDB() {
   try {
+    // 1. テーブルがなければ新規作成
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ranking (
         id SERIAL PRIMARY KEY,
-        name VARCHAR(50) NOT NULL,
+        name VARCHAR(50),
         clear_time REAL NOT NULL,
         play_log TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    
-    // 古いテーブル構造対策
+
+    // 2. カラム不足（name, play_log）がある場合は自動で追加修復
     await pool.query(`
+      ALTER TABLE ranking ADD COLUMN IF NOT EXISTS name VARCHAR(50);
       ALTER TABLE ranking ADD COLUMN IF NOT EXISTS play_log TEXT;
     `);
 
-    console.log("Database initialized successfully");
+    console.log("Database schema successfully verified/updated");
   } catch (err) {
     console.error("DB Init Error:", err);
   }
@@ -53,7 +54,7 @@ app.post('/api/score', async (req, res) => {
   }
 
   try {
-    // クリーンな Base64 文字列として PostgreSQL に保存 (エラーが絶対に起きない)
+    // まず name カラムへ保存を試みる
     await pool.query(
       'INSERT INTO ranking (name, clear_time, play_log) VALUES ($1, $2, $3)',
       [String(name), parseFloat(scoreTime), cleanBase64Log]
@@ -62,6 +63,19 @@ app.post('/api/score', async (req, res) => {
     console.log(`[SCORE SAVED] Name: ${name}, Time: ${scoreTime}`);
     res.json({ success: true, message: "OK: Score Saved" });
   } catch (err) {
+    // もし既存テーブルのカラム名が player_name になっている場合の安全フォールバック
+    if (err.message && err.message.includes('column "name"')) {
+      try {
+        await pool.query(
+          'INSERT INTO ranking (player_name, clear_time, play_log) VALUES ($1, $2, $3)',
+          [String(name), parseFloat(scoreTime), cleanBase64Log]
+        );
+        return res.json({ success: true, message: "OK: Score Saved (player_name)" });
+      } catch (fallbackErr) {
+        console.error("Fallback Save Error:", fallbackErr);
+      }
+    }
+
     console.error("Save Error Detail:", err);
     res.status(500).json({ 
       error: "Database error", 
@@ -73,7 +87,7 @@ app.post('/api/score', async (req, res) => {
 // ── 【ログダウンロード API (GET)】 ──
 app.get('/api/log/:id', async (req, res) => {
   try {
-    const result = await pool.query('SELECT name, play_log FROM ranking WHERE id = $1', [req.params.id]);
+    const result = await pool.query('SELECT COALESCE(name, player_name, \'Player\') as name, play_log FROM ranking WHERE id = $1', [req.params.id]);
     if (result.rows.length === 0 || !result.rows[0].play_log) {
       return res.status(404).send('Log not found');
     }
@@ -81,7 +95,6 @@ app.get('/api/log/:id', async (req, res) => {
     const item = result.rows[0];
     const filename = `log_${item.name}_${req.params.id}.txt`;
 
-    // Base64テキストとしてそのままダウンロード保存させる
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(item.play_log);
@@ -104,7 +117,7 @@ app.post('/api/reset', async (req, res) => {
 // ── 【ランキング表示 Webページ (GET /)】 ──
 app.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM ranking ORDER BY clear_time ASC LIMIT 10');
+    const result = await pool.query('SELECT id, COALESCE(name, player_name, \'Player\') as name, clear_time, play_log FROM ranking ORDER BY clear_time ASC LIMIT 10');
     
     let rowsHtml = '';
     result.rows.forEach((row, index) => {
