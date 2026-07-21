@@ -16,8 +16,8 @@ async function initDatabase() {
             ssl: { rejectUnauthorized: false }
         });
         await client.connect();
-        
-        // 【拡張】play_log 列を追加（Base64の文字列をそのまま格納する大容量テキスト型）
+
+        // play_log 列を追加（Base64などのテキスト型）
         await client.query(`
             CREATE TABLE IF NOT EXISTS ranking (
                 id SERIAL PRIMARY KEY,
@@ -57,8 +57,7 @@ const server = http.createServer(async (req, res) => {
     let message = "";
     let isError = false;
 
-    // ─── 【新機能】個別のプレイログ（Base64）を取得するAPI ───
-    // 例: /get_log?id=5 にアクセスされた場合、そのIDのBase64文字列だけをプレーンテキストで返す
+    // ─── 個別のプレイログ（Base64）を取得するAPI ───
     if (parsedUrl.pathname === '/get_log' && query.id) {
         const recordId = parseInt(query.id, 10);
         if (!isNaN(recordId) && globalDbClient) {
@@ -66,7 +65,7 @@ const server = http.createServer(async (req, res) => {
                 const dbRes = await globalDbClient.query("SELECT play_log FROM ranking WHERE id = $1;", [recordId]);
                 if (dbRes.rows.length > 0 && dbRes.rows[0].play_log) {
                     res.writeHead(200, { 'Content-Type': 'text/plain; charset=UTF-8' });
-                    res.end(dbRes.rows[0].play_log); // Base64テキストだけをそのまま返す
+                    res.end(dbRes.rows[0].play_log);
                     return;
                 }
             } catch (err) {
@@ -96,15 +95,14 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // 2. ゲームクライアントからのスコア登録処理（?name=名前&time=タイム&log=Base64文字列）
+    // 2. ゲームクライアントからのスコア登録処理
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
-        const playLog = query.log ? String(query.log).trim() : null; // 【追加】ゲームから送られてきたBase64文字列
+        const playLog = query.log ? String(query.log).trim() : null;
 
         if (playerName.length > 0 && !isNaN(clearTime) && globalDbClient) {
             try {
-                // 【修正】play_logも一緒にインサートする
                 await globalDbClient.query(
                     "INSERT INTO ranking (player_name, clear_time, play_log) VALUES ($1, $2, $3);",
                     [playerName, clearTime, playLog]
@@ -123,20 +121,19 @@ const server = http.createServer(async (req, res) => {
     let rankingList = [];
     if (globalDbClient) {
         try {
-            // 【修正】C++側がボタンに紐付けられるよう「id」も一緒に取得する
             const dbRes = await globalDbClient.query("SELECT id, player_name, clear_time, play_log FROM ranking ORDER BY clear_time ASC LIMIT 1000;");
             rankingList = dbRes.rows.map(row => ({ 
-                id: row.id, // ID
+                id: row.id,
                 playerName: row.player_name, 
                 clearTime: row.clear_time,
-                hasLog: !!row.play_log // ログが存在するかどうかのフラグ
+                hasLog: !!row.play_log
             }));
         } catch (err) {
             console.error("データ取得エラー:", err);
         }
     }
 
-    // JSONでデータを要求された場合（C++クライアント向け）は、ID付きのデータを返すようにすると便利です
+    // JSONでデータを要求された場合
     if (query.format === 'json') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(rankingList));
@@ -147,33 +144,68 @@ const server = http.createServer(async (req, res) => {
     let messageHtml = "";
     if (message) {
         const color = isError ? "#e74c3c" : "#2ecc71";
-        messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 400px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
+        messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 460px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
     }
 
     // 表示するWebページのHTMLソースコードの作成
     let html = `<html><head><meta charset='utf-8'><title>Solo Ranking</title>
     <style>
-        body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px; color: #2c3e50; }
-        table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 460px; }
+        body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px 20px; color: #2c3e50; }
+        table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 480px; }
         th, td { padding: 12px 20px; border-bottom: 1px solid #ddd; }
         th { background: #2c3e50; color: #fff; }
         tr:nth-child(even) { background: #f9f9f9; }
-        .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
+        .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
         input[type='password'] { padding: 8px; width: 180px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
         input[type='submit'] { padding: 8px 16px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
         input[type='submit']:hover { background: #c0392b; }
         h1 { margin-bottom: 5px; color: #2c3e50; }
-        h2 { font-size: 16px; color: #7f8c8d; margin-top: 0; margin-bottom: 25px; }
+        h2 { font-size: 16px; color: #7f8c8d; margin-top: 0; margin-bottom: 20px; }
         .log-btn { background: #3498db; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; }
         .log-btn:hover { background: #2980b9; }
+
+        /* 📢 謝罪文・お知らせ用スタイル */
+        .notice-box {
+            background: #fff;
+            border-left: 5px solid #e67e22;
+            padding: 15px 20px;
+            margin: 0 auto 25px auto;
+            max-width: 480px;
+            text-align: left;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.08);
+        }
+        .notice-title {
+            font-weight: bold;
+            color: #d35400;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+        .notice-body {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.5;
+        }
     </style>
     </head><body>
     <h1>Solo Play Ranking</h1>
     <h2>Game Score Board</h2>
+
+    <!-- 📢 ここに謝罪文・お知らせを表示します -->
+    <div class='notice-box'>
+        <div class='notice-title'> システム不具合に関するお詫びとお知らせ</div>
+        <div class='notice-body'>
+            サーバーアップデートに伴う障害により、一時的にランキング機能が利用できない状態が発生しておりました。<br>
+            ご利用の皆様には大変ご迷惑をおかけしましたことを深くお詫び申し上げます。<br>
+            現在は復旧し、正常に記録されるようになっております。
+        </div>
+    </div>
+
     ${messageHtml}
+
     <table><tr><th>Rank</th><th>Player</th><th>Time</th><th>Log</th></tr>`;
     
-    // データ表示部分（ブラウザ用のWeb画面でもログが確認・DLできるようにボタンを設置）
+    // データ表示部分
     if (rankingList.length === 0) {
         html += `<tr><td colspan='4' style='color:#7f8c8d; padding: 20px;'>No records found. Play the game to set a record!</td></tr>`;
     } else {
