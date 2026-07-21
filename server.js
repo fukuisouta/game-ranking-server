@@ -148,7 +148,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 表示するWebページのHTMLソースコードの作成
-    let html = `<html><head><meta charset='utf-8'><title>Solo Ranking</title>
+    let html = `<html><head><meta charset='utf-8'><title>Ranking</title>
     <style>
         body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 50px 20px; color: #2c3e50; }
         table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 480px; }
@@ -164,7 +164,7 @@ const server = http.createServer(async (req, res) => {
         .log-btn { background: #3498db; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; }
         .log-btn:hover { background: #2980b9; }
 
-        /* 📢 謝罪文・お知らせ用スタイル */
+        /* 📢 謝罪文・お知らせ用 */
         .notice-box {
             background: #fff;
             border-left: 5px solid #e67e22;
@@ -191,7 +191,7 @@ const server = http.createServer(async (req, res) => {
     <h1>Solo Play Ranking</h1>
     <h2>Game Score Board</h2>
 
-    <!-- 📢 ここに謝罪文・お知らせを表示します -->
+    <!-- 📢 ここにお知らせを表示します -->
     <div class='notice-box'>
         <div class='notice-title'> システム不具合に関するお詫びとお知らせ</div>
         <div class='notice-body'>
