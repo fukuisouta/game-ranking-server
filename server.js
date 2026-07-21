@@ -28,7 +28,7 @@ async function initDatabase() {
             );
         `);
 
-        // 2. 掲示板用テーブル作成 (新規追加)
+        // 2. 掲示板用テーブル作成
         await client.query(`
             CREATE TABLE IF NOT EXISTS comments (
                 id SERIAL PRIMARY KEY,
@@ -103,13 +103,33 @@ const server = http.createServer(async (req, res) => {
                 console.error("コメント投稿エラー:", err);
             }
         }
-        // 投稿完了後はトップページにリダイレクト
         res.writeHead(302, { 'Location': '/' });
         res.end();
         return;
     }
 
-    // ─── 3. パスワードによるランキングリセット処理 ───
+    // ─── 3. 掲示板の特定コメント削除処理 (/delete_comment) ───
+    if (parsedUrl.pathname === '/delete_comment' && query.id) {
+        const commentId = parseInt(query.id, 10);
+        const inputPass = query.pass ? String(query.pass).trim() : '';
+
+        // パスワード確認（ReoNa3150）
+        if (inputPass === "ReoNa3150") {
+            if (!isNaN(commentId) && globalDbClient) {
+                try {
+                    await globalDbClient.query("DELETE FROM comments WHERE id = $1;", [commentId]);
+                    console.log(`[BBS_DELETE] コメントID:${commentId} を削除しました。`);
+                } catch (err) {
+                    console.error("コメント削除エラー:", err);
+                }
+            }
+        }
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+    }
+
+    // ─── 4. パスワードによるランキングリセット処理 ───
     if (query.password !== undefined) {
         if (query.password === "ReoNa3150") {
             const success = await resetDatabase();
@@ -126,7 +146,7 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // ─── 4. ゲームクライアントからのスコア登録処理 ───
+    // ─── 5. ゲームクライアントからのスコア登録処理 ───
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
@@ -148,7 +168,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 5. 最新データの取得 (ランキング & コメント) ───
+    // ─── 6. 最新データの取得 (ランキング & コメント) ───
     let rankingList = [];
     let commentList = [];
 
@@ -163,9 +183,10 @@ const server = http.createServer(async (req, res) => {
                 hasLog: !!row.play_log
             }));
 
-            // 掲示板コメント取得（最新50件を新しい順に）
-            const bbsRes = await globalDbClient.query("SELECT author, message, created_at FROM comments ORDER BY id DESC LIMIT 50;");
+            // 掲示板コメント取得（idも一緒に取得）
+            const bbsRes = await globalDbClient.query("SELECT id, author, message, created_at FROM comments ORDER BY id DESC LIMIT 50;");
             commentList = bbsRes.rows.map(row => ({
+                id: row.id,
                 author: row.author,
                 message: row.message,
                 time: new Date(row.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
@@ -190,7 +211,7 @@ const server = http.createServer(async (req, res) => {
         messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 480px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
     }
 
-    // ─── 6. HTMLソースコード作成 ───
+    // ─── 7. HTMLソースコード作成 ───
     let html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Ranking & BBS</title>
     <style>
         body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 40px 20px; color: #2c3e50; }
@@ -223,11 +244,21 @@ const server = http.createServer(async (req, res) => {
         .bbs-form .input-msg { width: 95%; display: block; }
         .bbs-form input[type='submit'] { background: #3498db; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .bbs-form input[type='submit']:hover { background: #2980b9; }
-        .comment-item { border-bottom: 1px solid #eee; padding: 10px 0; }
+        
+        .comment-item { border-bottom: 1px solid #eee; padding: 10px 0; position: relative; }
         .comment-item:last-child { border-bottom: none; }
         .comment-header { font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
         .comment-author { font-weight: bold; color: #2c3e50; font-size: 13px; }
-        .comment-body { font-size: 14px; color: #333; word-break: break-all; }
+        .comment-body { font-size: 14px; color: #333; word-break: break-all; padding-right: 40px; }
+        
+        /* 🗑️ 削除ボタン用の装飾 */
+        .del-btn {
+            position: absolute; right: 0; top: 10px;
+            color: #e74c3c; font-size: 11px; text-decoration: none;
+            border: 1px solid #e74c3c; padding: 2px 6px; border-radius: 3px;
+            background: #fff;
+        }
+        .del-btn:hover { background: #e74c3c; color: #fff; }
 
         /* 管理者パネル */
         .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
@@ -235,8 +266,17 @@ const server = http.createServer(async (req, res) => {
         .btn-reset { padding: 8px 16px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .btn-reset:hover { background: #c0392b; }
     </style>
+    <script>
+        // 削除ボタンを押したときにパスワード入力を求めるJavaScript
+        function deleteComment(id) {
+            var pass = prompt("削除用管理者パスワードを入力してください:");
+            if (pass) {
+                window.location.href = "/delete_comment?id=" + id + "&pass=" + encodeURIComponent(pass);
+            }
+        }
+    </script>
     </head><body>
-    <h1>Solo Play Ranking</h1>
+    <h1> Ranking</h1>
     <h2>Game Score Board</h2>
 
     <!-- 📢 お知らせ -->
@@ -245,7 +285,7 @@ const server = http.createServer(async (req, res) => {
         <div class='notice-body'>
             サーバーアップデートに伴う障害により、一時的にランキング機能が利用できない状態が発生しておりました。<br>
             ご利用の皆様には大変ご迷惑をおかけしましたことを深くお詫び申し上げます。<br>
-            現在は復復旧し、正常に記録されるようになっております。
+            現在は復旧し、正常に記録されるようになっております。
         </div>
     </div>
 
@@ -270,7 +310,7 @@ const server = http.createServer(async (req, res) => {
     // ─── 💬 掲示板セクション ───
     html += `
     <div class='bbs-container'>
-        <h3>💬 Player BBS (掲示板)</h3>
+        <h3>💬掲示板</h3>
         <form class='bbs-form' action='/post_comment' method='get'>
             <input type='text' name='author' class='input-author' placeholder='Name (名前)' maxlength='16' required>
             <input type='text' name='message' class='input-msg' placeholder='Leave a message... (コメントを書く)' maxlength='140' required>
@@ -285,6 +325,7 @@ const server = http.createServer(async (req, res) => {
         commentList.forEach(c => {
             html += `
             <div class='comment-item'>
+                <a href='javascript:void(0);' class='del-btn' onclick='deleteComment(${c.id})'>削除</a>
                 <div class='comment-header'>
                     <span class='comment-author'>${escapeHtml(c.author)}</span> • <span>${c.time}</span>
                 </div>
