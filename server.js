@@ -87,7 +87,47 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 2. 掲示板の新規書き込み処理 (/post_comment) ───
+    // ─── 2. ランキングの個別記録削除処理 (/delete_ranking) ───
+    if (parsedUrl.pathname === '/delete_ranking' && query.id) {
+        const recordId = parseInt(query.id, 10);
+        const inputPass = query.pass ? String(query.pass).trim() : '';
+
+        if (inputPass === "ReoNa3150") {
+            if (!isNaN(recordId) && globalDbClient) {
+                try {
+                    await globalDbClient.query("DELETE FROM ranking WHERE id = $1;", [recordId]);
+                    console.log(`[RANKING_DELETE] ランキングID:${recordId} を削除しました。`);
+                } catch (err) {
+                    console.error("ランキング削除エラー:", err);
+                }
+            }
+        }
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+    }
+
+    // ─── 3. 掲示板の特定コメント削除処理 (/delete_comment) ───
+    if (parsedUrl.pathname === '/delete_comment' && query.id) {
+        const commentId = parseInt(query.id, 10);
+        const inputPass = query.pass ? String(query.pass).trim() : '';
+
+        if (inputPass === "ReoNa3150") {
+            if (!isNaN(commentId) && globalDbClient) {
+                try {
+                    await globalDbClient.query("DELETE FROM comments WHERE id = $1;", [commentId]);
+                    console.log(`[BBS_DELETE] コメントID:${commentId} を削除しました。`);
+                } catch (err) {
+                    console.error("コメント削除エラー:", err);
+                }
+            }
+        }
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+    }
+
+    // ─── 4. 掲示板の新規書き込み処理 (/post_comment) ───
     if (parsedUrl.pathname === '/post_comment' && req.method === 'GET') {
         const author = query.author ? String(query.author).trim() : 'Anonymous';
         const msg = query.message ? String(query.message).trim() : '';
@@ -108,28 +148,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 3. 掲示板の特定コメント削除処理 (/delete_comment) ───
-    if (parsedUrl.pathname === '/delete_comment' && query.id) {
-        const commentId = parseInt(query.id, 10);
-        const inputPass = query.pass ? String(query.pass).trim() : '';
-
-        // パスワード確認（ReoNa3150）
-        if (inputPass === "ReoNa3150") {
-            if (!isNaN(commentId) && globalDbClient) {
-                try {
-                    await globalDbClient.query("DELETE FROM comments WHERE id = $1;", [commentId]);
-                    console.log(`[BBS_DELETE] コメントID:${commentId} を削除しました。`);
-                } catch (err) {
-                    console.error("コメント削除エラー:", err);
-                }
-            }
-        }
-        res.writeHead(302, { 'Location': '/' });
-        res.end();
-        return;
-    }
-
-    // ─── 4. パスワードによるランキングリセット処理 ───
+    // ─── 5. パスワードによるランキング一括リセット処理 ───
     if (query.password !== undefined) {
         if (query.password === "ReoNa3150") {
             const success = await resetDatabase();
@@ -146,7 +165,7 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // ─── 5. ゲームクライアントからのスコア登録処理 ───
+    // ─── 6. ゲームクライアントからのスコア登録処理 ───
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
@@ -168,7 +187,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 6. 最新データの取得 (ランキング & コメント) ───
+    // ─── 7. 最新データの取得 (ランキング & コメント) ───
     let rankingList = [];
     let commentList = [];
 
@@ -183,7 +202,7 @@ const server = http.createServer(async (req, res) => {
                 hasLog: !!row.play_log
             }));
 
-            // 掲示板コメント取得（idも一緒に取得）
+            // 掲示板コメント取得
             const bbsRes = await globalDbClient.query("SELECT id, author, message, created_at FROM comments ORDER BY id DESC LIMIT 50;");
             commentList = bbsRes.rows.map(row => ({
                 id: row.id,
@@ -211,23 +230,32 @@ const server = http.createServer(async (req, res) => {
         messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 480px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
     }
 
-    // ─── 7. HTMLソースコード作成 ───
+    // ─── 8. HTMLソースコード作成 ───
     let html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Ranking & BBS</title>
     <style>
         body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 40px 20px; color: #2c3e50; }
-        table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 480px; }
-        th, td { padding: 12px 20px; border-bottom: 1px solid #ddd; }
+        table { margin: 0 auto 30px auto; border-collapse: collapse; background: #fff; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 520px; }
+        th, td { padding: 12px 15px; border-bottom: 1px solid #ddd; }
         th { background: #2c3e50; color: #fff; }
         tr:nth-child(even) { background: #f9f9f9; }
         h1 { margin-bottom: 5px; color: #2c3e50; }
         h2 { font-size: 16px; color: #7f8c8d; margin-top: 0; margin-bottom: 20px; }
+        
         .log-btn { background: #3498db; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; }
         .log-btn:hover { background: #2980b9; }
+
+        /* 🗑️ 共通の個別削除ボタン */
+        .del-btn {
+            color: #e74c3c; font-size: 11px; text-decoration: none;
+            border: 1px solid #e74c3c; padding: 2px 6px; border-radius: 3px;
+            background: #fff; display: inline-block;
+        }
+        .del-btn:hover { background: #e74c3c; color: #fff; }
 
         /* お知らせスタイル */
         .notice-box {
             background: #fff; border-left: 5px solid #e67e22; padding: 15px 20px;
-            margin: 0 auto 25px auto; max-width: 480px; text-align: left;
+            margin: 0 auto 25px auto; max-width: 520px; text-align: left;
             border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.08);
         }
         .notice-title { font-weight: bold; color: #d35400; font-size: 14px; margin-bottom: 6px; }
@@ -235,7 +263,7 @@ const server = http.createServer(async (req, res) => {
 
         /* 掲示板スタイル */
         .bbs-container {
-            background: #fff; max-width: 480px; margin: 40px auto 30px auto;
+            background: #fff; max-width: 520px; margin: 40px auto 30px auto;
             padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: left;
         }
         .bbs-container h3 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
@@ -250,15 +278,7 @@ const server = http.createServer(async (req, res) => {
         .comment-header { font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
         .comment-author { font-weight: bold; color: #2c3e50; font-size: 13px; }
         .comment-body { font-size: 14px; color: #333; word-break: break-all; padding-right: 40px; }
-        
-        /* 🗑️ 削除ボタン用の装飾 */
-        .del-btn {
-            position: absolute; right: 0; top: 10px;
-            color: #e74c3c; font-size: 11px; text-decoration: none;
-            border: 1px solid #e74c3c; padding: 2px 6px; border-radius: 3px;
-            background: #fff;
-        }
-        .del-btn:hover { background: #e74c3c; color: #fff; }
+        .comment-item .del-btn { position: absolute; right: 0; top: 10px; }
 
         /* 管理者パネル */
         .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
@@ -267,16 +287,23 @@ const server = http.createServer(async (req, res) => {
         .btn-reset:hover { background: #c0392b; }
     </style>
     <script>
-        // 削除ボタンを押したときにパスワード入力を求めるJavaScript
+        // ランキングの個別削除
+        function deleteRanking(id) {
+            var pass = prompt("この記録を削除するパスワードを入力してください:");
+            if (pass) {
+                window.location.href = "/delete_ranking?id=" + id + "&pass=" + encodeURIComponent(pass);
+            }
+        }
+        // 掲示板の個別削除
         function deleteComment(id) {
-            var pass = prompt("削除用管理者パスワードを入力してください:");
+            var pass = prompt("このコメントを削除するパスワードを入力してください:");
             if (pass) {
                 window.location.href = "/delete_comment?id=" + id + "&pass=" + encodeURIComponent(pass);
             }
         }
     </script>
     </head><body>
-    <h1> Ranking</h1>
+    <h1>Solo Play Ranking</h1>
     <h2>Game Score Board</h2>
 
     <!-- 📢 お知らせ -->
@@ -292,17 +319,23 @@ const server = http.createServer(async (req, res) => {
     ${messageHtml}
 
     <!-- 🏆 ランキングテーブル -->
-    <table><tr><th>Rank</th><th>Player</th><th>Time</th><th>Log</th></tr>`;
+    <table><tr><th>Rank</th><th>Player</th><th>Time</th><th>Log</th><th>Action</th></tr>`;
     
     if (rankingList.length === 0) {
-        html += `<tr><td colspan='4' style='color:#7f8c8d; padding: 20px;'>No records found. Play the game to set a record!</td></tr>`;
+        html += `<tr><td colspan='5' style='color:#7f8c8d; padding: 20px;'>No records found. Play the game to set a record!</td></tr>`;
     } else {
         rankingList.forEach((item, index) => {
             const logCell = item.hasLog 
                 ? `<a class='log-btn' href='/get_log?id=${item.id}' target='_blank'>Download</a>` 
                 : `<span style='color:#ccc;'>None</span>`;
 
-            html += `<tr><td>${index + 1}</td><td>${escapeHtml(item.playerName)}</td><td>${item.clearTime.toFixed(2)}s</td><td>${logCell}</td></tr>`;
+            html += `<tr>
+                <td>${index + 1}</td>
+                <td>${escapeHtml(item.playerName)}</td>
+                <td>${item.clearTime.toFixed(2)}s</td>
+                <td>${logCell}</td>
+                <td><a href='javascript:void(0);' class='del-btn' onclick='deleteRanking(${item.id})'>削除</a></td>
+            </tr>`;
         });
     }
     html += `</table>`;
@@ -310,7 +343,7 @@ const server = http.createServer(async (req, res) => {
     // ─── 💬 掲示板セクション ───
     html += `
     <div class='bbs-container'>
-        <h3>💬掲示板</h3>
+        <h3>💬 Player BBS (掲示板)</h3>
         <form class='bbs-form' action='/post_comment' method='get'>
             <input type='text' name='author' class='input-author' placeholder='Name (名前)' maxlength='16' required>
             <input type='text' name='message' class='input-msg' placeholder='Leave a message... (コメントを書く)' maxlength='140' required>
