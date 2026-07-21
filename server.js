@@ -38,7 +38,17 @@ async function initDatabase() {
             );
         `);
 
-        console.log("[DB_SUCCESS] PostgreSQLに接続完了 (ランキング & 掲示板)。");
+        // 3. お知らせ用テーブル作成 (新規追加)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS notices (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(64) NOT NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        console.log("[DB_SUCCESS] PostgreSQLに接続完了 (ランキング & 掲示板 & お知らせ)。");
         return client;
     } catch (err) {
         console.error("[DB_ERROR] DB接続失敗:", err);
@@ -87,19 +97,57 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 2. ランキングの個別記録削除処理 (/delete_ranking) ───
+    // ─── 2. お知らせの追加処理 (/post_notice) ───
+    if (parsedUrl.pathname === '/post_notice' && req.method === 'GET') {
+        const pass = query.pass ? String(query.pass).trim() : '';
+        const title = query.title ? String(query.title).trim() : '';
+        const body = query.body ? String(query.body).trim() : '';
+
+        if (pass === "ReoNa3150" && title && body && globalDbClient) {
+            try {
+                await globalDbClient.query(
+                    "INSERT INTO notices (title, body) VALUES ($1, $2);",
+                    [title.substring(0, 64), body]
+                );
+                console.log(`[NOTICE_ADD] お知らせ追加: ${title}`);
+            } catch (err) {
+                console.error("お知らせ追加エラー:", err);
+            }
+        }
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+    }
+
+    // ─── 3. お知らせの削除処理 (/delete_notice) ───
+    if (parsedUrl.pathname === '/delete_notice' && query.id) {
+        const noticeId = parseInt(query.id, 10);
+        const inputPass = query.pass ? String(query.pass).trim() : '';
+
+        if (inputPass === "ReoNa3150" && !isNaN(noticeId) && globalDbClient) {
+            try {
+                await globalDbClient.query("DELETE FROM notices WHERE id = $1;", [noticeId]);
+                console.log(`[NOTICE_DELETE] お知らせID:${noticeId} を削除しました。`);
+            } catch (err) {
+                console.error("お知らせ削除エラー:", err);
+            }
+        }
+        res.writeHead(302, { 'Location': '/' });
+        res.end();
+        return;
+    }
+
+    // ─── 4. ランキングの個別記録削除処理 (/delete_ranking) ───
     if (parsedUrl.pathname === '/delete_ranking' && query.id) {
         const recordId = parseInt(query.id, 10);
         const inputPass = query.pass ? String(query.pass).trim() : '';
 
-        if (inputPass === "ReoNa3150") {
-            if (!isNaN(recordId) && globalDbClient) {
-                try {
-                    await globalDbClient.query("DELETE FROM ranking WHERE id = $1;", [recordId]);
-                    console.log(`[RANKING_DELETE] ランキングID:${recordId} を削除しました。`);
-                } catch (err) {
-                    console.error("ランキング削除エラー:", err);
-                }
+        if (inputPass === "ReoNa3150" && !isNaN(recordId) && globalDbClient) {
+            try {
+                await globalDbClient.query("DELETE FROM ranking WHERE id = $1;", [recordId]);
+                console.log(`[RANKING_DELETE] ランキングID:${recordId} を削除しました。`);
+            } catch (err) {
+                console.error("ランキング削除エラー:", err);
             }
         }
         res.writeHead(302, { 'Location': '/' });
@@ -107,19 +155,17 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 3. 掲示板の特定コメント削除処理 (/delete_comment) ───
+    // ─── 5. 掲示板の特定コメント削除処理 (/delete_comment) ───
     if (parsedUrl.pathname === '/delete_comment' && query.id) {
         const commentId = parseInt(query.id, 10);
         const inputPass = query.pass ? String(query.pass).trim() : '';
 
-        if (inputPass === "ReoNa3150") {
-            if (!isNaN(commentId) && globalDbClient) {
-                try {
-                    await globalDbClient.query("DELETE FROM comments WHERE id = $1;", [commentId]);
-                    console.log(`[BBS_DELETE] コメントID:${commentId} を削除しました。`);
-                } catch (err) {
-                    console.error("コメント削除エラー:", err);
-                }
+        if (inputPass === "ReoNa3150" && !isNaN(commentId) && globalDbClient) {
+            try {
+                await globalDbClient.query("DELETE FROM comments WHERE id = $1;", [commentId]);
+                console.log(`[BBS_DELETE] コメントID:${commentId} を削除しました。`);
+            } catch (err) {
+                console.error("コメント削除エラー:", err);
             }
         }
         res.writeHead(302, { 'Location': '/' });
@@ -127,7 +173,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 4. 掲示板の新規書き込み処理 (/post_comment) ───
+    // ─── 6. 掲示板の新規書き込み処理 (/post_comment) ───
     if (parsedUrl.pathname === '/post_comment' && req.method === 'GET') {
         const author = query.author ? String(query.author).trim() : 'Anonymous';
         const msg = query.message ? String(query.message).trim() : '';
@@ -148,7 +194,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 5. パスワードによるランキング一括リセット処理 ───
+    // ─── 7. パスワードによるランキング一括リセット処理 ───
     if (query.password !== undefined) {
         if (query.password === "ReoNa3150") {
             const success = await resetDatabase();
@@ -165,7 +211,7 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
-    // ─── 6. ゲームクライアントからのスコア登録処理 ───
+    // ─── 8. ゲームクライアントからのスコア登録処理 ───
     if (query.name && query.time) {
         const playerName = String(query.name).trim();
         const clearTime = parseFloat(query.time);
@@ -187,9 +233,10 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // ─── 7. 最新データの取得 (ランキング & コメント) ───
+    // ─── 9. 最新データの取得 (ランキング & コメント & お知らせ) ───
     let rankingList = [];
     let commentList = [];
+    let noticeList = [];
 
     if (globalDbClient) {
         try {
@@ -211,6 +258,14 @@ const server = http.createServer(async (req, res) => {
                 time: new Date(row.created_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
             }));
 
+            // お知らせ取得（新しい順）
+            const noticeRes = await globalDbClient.query("SELECT id, title, body FROM notices ORDER BY id DESC;");
+            noticeList = noticeRes.rows.map(row => ({
+                id: row.id,
+                title: row.title,
+                body: row.body
+            }));
+
         } catch (err) {
             console.error("データ取得エラー:", err);
         }
@@ -227,10 +282,10 @@ const server = http.createServer(async (req, res) => {
     let messageHtml = "";
     if (message) {
         const color = isError ? "#e74c3c" : "#2ecc71";
-        messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 480px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
+        messageHtml = `<div style='background: ${color}; color: #fff; padding: 12px; margin-bottom: 20px; border-radius: 4px; font-weight: bold; max-width: 520px; margin-left: auto; margin-right: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);'>${message}</div>`;
     }
 
-    // ─── 8. HTMLソースコード作成 ───
+    // ─── 10. HTMLソースコード作成 ───
     let html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>Ranking & BBS</title>
     <style>
         body { font-family: sans-serif; background: #f4f7f6; text-align: center; padding: 40px 20px; color: #2c3e50; }
@@ -244,7 +299,6 @@ const server = http.createServer(async (req, res) => {
         .log-btn { background: #3498db; color: white; padding: 4px 8px; border-radius: 4px; text-decoration: none; font-size: 12px; }
         .log-btn:hover { background: #2980b9; }
 
-        /* 🗑️ 共通の個別削除ボタン */
         .del-btn {
             color: #e74c3c; font-size: 11px; text-decoration: none;
             border: 1px solid #e74c3c; padding: 2px 6px; border-radius: 3px;
@@ -255,11 +309,12 @@ const server = http.createServer(async (req, res) => {
         /* お知らせスタイル */
         .notice-box {
             background: #fff; border-left: 5px solid #e67e22; padding: 15px 20px;
-            margin: 0 auto 25px auto; max-width: 520px; text-align: left;
-            border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.08);
+            margin: 0 auto 15px auto; max-width: 520px; text-align: left;
+            border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.08); position: relative;
         }
-        .notice-title { font-weight: bold; color: #d35400; font-size: 14px; margin-bottom: 6px; }
-        .notice-body { font-size: 13px; color: #555; line-height: 1.5; }
+        .notice-title { font-weight: bold; color: #d35400; font-size: 14px; margin-bottom: 6px; padding-right: 45px; }
+        .notice-body { font-size: 13px; color: #555; line-height: 1.5; white-space: pre-wrap; }
+        .notice-box .del-btn { position: absolute; right: 15px; top: 15px; }
 
         /* 掲示板スタイル */
         .bbs-container {
@@ -281,41 +336,46 @@ const server = http.createServer(async (req, res) => {
         .comment-item .del-btn { position: absolute; right: 0; top: 10px; }
 
         /* 管理者パネル */
-        .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 360px; margin: 0 auto; border-top: 4px solid #e74c3c; }
-        input[type='password'] { padding: 8px; width: 180px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; }
-        .btn-reset { padding: 8px 16px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .admin-panel { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 520px; margin: 0 auto; border-top: 4px solid #e74c3c; text-align: left; }
+        .admin-panel h3 { margin-top: 0; color: #2c3e50; font-size: 16px; }
+        .admin-form input, .admin-form textarea { width: 95%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px; font-size: 13px; }
+        .admin-form textarea { height: 60px; resize: vertical; }
+        .btn-action { padding: 8px 16px; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-add { background: #e67e22; }
+        .btn-add:hover { background: #d35400; }
+        .btn-reset { background: #e74c3c; }
         .btn-reset:hover { background: #c0392b; }
     </style>
     <script>
-        // ランキングの個別削除
         function deleteRanking(id) {
-            var pass = prompt("この記録を削除するパスワードを入力してください:");
-            if (pass) {
-                window.location.href = "/delete_ranking?id=" + id + "&pass=" + encodeURIComponent(pass);
-            }
+            var pass = prompt("パスワードを入力してください:");
+            if (pass) window.location.href = "/delete_ranking?id=" + id + "&pass=" + encodeURIComponent(pass);
         }
-        // 掲示板の個別削除
         function deleteComment(id) {
-            var pass = prompt("このコメントを削除するパスワードを入力してください:");
-            if (pass) {
-                window.location.href = "/delete_comment?id=" + id + "&pass=" + encodeURIComponent(pass);
-            }
+            var pass = prompt("パスワードを入力してください:");
+            if (pass) window.location.href = "/delete_comment?id=" + id + "&pass=" + encodeURIComponent(pass);
+        }
+        function deleteNotice(id) {
+            var pass = prompt("パスワードを入力してください:");
+            if (pass) window.location.href = "/delete_notice?id=" + id + "&pass=" + encodeURIComponent(pass);
         }
     </script>
     </head><body>
     <h1>Solo Play Ranking</h1>
     <h2>Game Score Board</h2>
 
-    <!-- 📢 お知らせ -->
-    <div class='notice-box'>
-        <div class='notice-title'>⚠️ システム不具合に関するお詫びとお知らせ</div>
-        <div class='notice-body'>
-            サーバーアップデートに伴う障害により、一時的にランキング機能が利用できない状態が発生しておりました。<br>
-            ご利用の皆様には大変ご迷惑をおかけしましたことを深くお詫び申し上げます。<br>
-            現在は復旧し、正常に記録されるようになっております。
-        </div>
-    </div>
+    <!-- 📢 動的お知らせエリア -->`;
+    
+    noticeList.forEach(notice => {
+        html += `
+        <div class='notice-box'>
+            <a href='javascript:void(0);' class='del-btn' onclick='deleteNotice(${notice.id})'>削除</a>
+            <div class='notice-title'>${escapeHtml(notice.title)}</div>
+            <div class='notice-body'>${escapeHtml(notice.body)}</div>
+        </div>`;
+    });
 
+    html += `
     ${messageHtml}
 
     <!-- 🏆 ランキングテーブル -->
@@ -371,13 +431,23 @@ const server = http.createServer(async (req, res) => {
         </div>
     </div>`;
 
-    // 🔒 管理者用リセットフォーム
+    // 🔒 管理者コントロールパネル
     html += `
     <div class='admin-panel'>
-        <h3 style='margin-top:0;'>Reset Ranking</h3>
+        <h3>📢 Add Notice (お知らせ追加)</h3>
+        <form class='admin-form' action='/post_notice' method='get'>
+            <input type='password' name='pass' placeholder='Admin Password' required>
+            <input type='text' name='title' placeholder='Notice Title (タイトル)' maxlength='64' required>
+            <textarea name='body' placeholder='Notice Content (本文)' required></textarea>
+            <input type='submit' class='btn-action btn-add' value='Post Notice'>
+        </form>
+
+        <hr style='border: none; border-top: 1px solid #eee; margin: 20px 0;'>
+
+        <h3 style='color: #e74c3c;'>⚠️ Reset Ranking (一括初期化)</h3>
         <form action='/' method='get'>
-            <input type='password' name='password' placeholder='Enter Admin Password' required>
-            <input type='submit' class='btn-reset' value='RESET ALL'>
+            <input type='password' name='password' placeholder='Enter Admin Password' style='width: 180px; padding: 8px; border: 1px solid #ccc; border-radius: 4px;' required>
+            <input type='submit' class='btn-action btn-reset' value='RESET ALL'>
         </form>
     </div>
     </body></html>`;
